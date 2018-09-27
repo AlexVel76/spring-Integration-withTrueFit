@@ -1,0 +1,125 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<beans xmlns="http://www.springframework.org/schema/beans" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xmlns:int="http://www.springframework.org/schema/integration" xmlns:int-file="http://www.springframework.org/schema/integration/file"
+    xmlns:context="http://www.springframework.org/schema/context" xmlns:util="http://www.springframework.org/schema/util"
+    xmlns:int-stream="http://www.springframework.org/schema/integration/stream" xmlns:int-ftp="http://www.springframework.org/schema/integration/ftp"
+    xmlns:int-sftp="http://www.springframework.org/schema/integration/sftp"
+    xsi:schemaLocation="http://www.springframework.org/schema/integration http://www.springframework.org/schema/integration/spring-integration.xsd
+		http://www.springframework.org/schema/integration/file http://www.springframework.org/schema/integration/file/spring-integration-file.xsd
+		http://www.springframework.org/schema/integration/stream http://www.springframework.org/schema/integration/stream/spring-integration-stream.xsd
+		http://www.springframework.org/schema/beans http://www.springframework.org/schema/beans/spring-beans.xsd
+		http://www.springframework.org/schema/util http://www.springframework.org/schema/util/spring-util.xsd
+		http://www.springframework.org/schema/integration/ftp http://www.springframework.org/schema/integration/ftp/spring-integration-ftp.xsd
+        http://www.springframework.org/schema/integration/sftp http://www.springframework.org/schema/integration/sftp/spring-integration-sftp.xsd
+		http://www.springframework.org/schema/context http://www.springframework.org/schema/context/spring-context.xsd">
+
+
+    <!-- Generating files in local dir -->
+
+    <int:channel id="trueFitEventChannel" />
+    <int:channel id="trueFitCompleteChannel" />
+    <int:channel id="trueFitPreChainChannel" />
+    <int:channel id="trueFitErrorChannel" />
+    <int:channel id="trueFitOutErrorChannel" />
+
+    <!-- Listen for TrueFitExportDataEvent and inject it into channel trueFitEventChannel -->
+    <bean id="trueFitEventListener" class="de.hybris.platform.acceleratorservices.dataexport.generic.event.ExportMessageSendingEventListener"
+        parent="abstractEventListener">
+        <property name="eventClass" value="com.myproject.services.export.truefit.TrueFitExportDataEvent" />
+        <property name="channel" ref="trueFitEventChannel" />
+        <property name="errorHandler">
+            <bean class="org.springframework.integration.channel.MessagePublishingErrorHandler" />
+        </property>
+    </bean>
+
+    <int:header-enricher input-channel="trueFitEventChannel" output-channel="trueFitPreChainChannel">
+        <int:header name="event" expression="payload" />
+        <int:header name="originSite" expression="payload.originSite" />
+        <int:error-channel ref="trueFitErrorChannel" />
+    </int:header-enricher>
+
+    <int:transformer input-channel="trueFitErrorChannel" output-channel="trueFitOutErrorChannel"
+        expression="T(org.apache.commons.lang.exception.ExceptionUtils).getStackTrace(payload) + '. Header is: '+ headers.toString()" />
+
+    <int-file:outbound-gateway request-channel="trueFitOutErrorChannel" reply-channel="nullChannel"
+        directory="${services.truefit.local.error.dir}" filename-generator-expression="T(java.lang.System).currentTimeMillis() + 'error' + '.txt'">
+    </int-file:outbound-gateway>
+
+
+    <int:publish-subscribe-channel id="trueFitPreCompleteChannel" />
+
+    <int:chain id="trueFitConverterChain" input-channel="trueFitPreChainChannel" output-channel="trueFitPreCompleteChannel">
+        <int:service-activator ref="trueFitDataProcessorService" method="getTrueFit" />
+        <int:transformer ref="trueFitDataProcessorService" method="convertItems" />
+        <int:transformer ref="trueFitDataProcessorService" method="convertToCSV" />
+    </int:chain>
+
+    <int-file:outbound-gateway request-channel="trueFitPreCompleteChannel" reply-channel="trueFitCompleteChannel"
+        directory="${services.truefit.local.processing.dir}" filename-generator-expression="headers.event.fileName + '.csv'">
+    </int-file:outbound-gateway>
+
+    <bean id="trueFitConverter" parent="abstractPopulatingConverter">
+        <property name="targetClass" value="com.myproject.services.export.truefit.TruefitData" />
+        <property name="populators">
+            <list>
+                <ref bean="trueFitPopulator" />
+            </list>
+        </property>
+    </bean>
+
+    <bean id="trueFitPopulator" class="com.myproject.services.export.truefit.TrueFitPopulator" />
+
+
+    <!-- Move generated files to ftp dirs -->
+
+    <bean id="sftpOutTruefitSite1ClientFactory" class="org.springframework.integration.sftp.session.DefaultSftpSessionFactory">
+        <property name="host" value="${services.truefit.myproject.out.sftp.host}" />
+        <property name="port" value="${services.truefit.myproject.out.sftp.port}" />
+        <property name="user" value="${services.truefit.myproject.out.sftp.username}" />
+        <property name="password" value="${services.truefit.myproject.out.sftp.password}" />
+        <property name="serverAliveCountMax" value="${services.truefit.myproject.out.sftp.serverAliveCountMax}" />
+        <property name="serverAliveInterval" value="${services.truefit.myproject.out.sftp.serverAliveInterval}" />
+    </bean>
+
+    <bean id="sftpOutTruefitSite2ClientFactory" class="org.springframework.integration.sftp.session.DefaultSftpSessionFactory"
+        scope="">
+        <property name="host" value="${services.truefit.site2.out.sftp.host}" />
+        <property name="port" value="${services.truefit.site2.out.sftp.port}" />
+        <property name="user" value="${services.truefit.site2.out.sftp.username}" />
+        <property name="password" value="${services.truefit.site2.out.sftp.password}" />
+        <property name="serverAliveCountMax" value="${services.truefit.site2.out.sftp.serverAliveCountMax}" />
+        <property name="serverAliveInterval" value="${services.truefit.site2.out.sftp.serverAliveInterval}" />
+    </bean>
+
+    <int:header-value-router input-channel="trueFitCompleteChannel" header-name="originSite">
+        <int:mapping value="#{T(com.myproject.core.constants.MyprojectCoreConstants).SITE1_CLIENT_SITE}" channel="trueFitSite1OutChannel" />
+        <int:mapping value="#{T(com.myproject.core.constants.MyprojectCoreConstants).SITE2_CLIENT_SITE}"
+            channel="trueFitSite2OutChannel" />
+    </int:header-value-router>
+
+    <int:channel id="trueFitSite1FtpOutChannel" />
+    <int:channel id="trueFitSite2FtpOutChannel" />
+    <int:channel id="trueFitSite1OutChannel" />
+    <int:channel id="trueFitSite2OutChannel" />
+
+    <int-file:outbound-gateway request-channel="trueFitSite1OutChannel" reply-channel="trueFitSite1FtpOutChannel"
+        directory="${services.truefit.local.myproject.processed.dir}" filename-generator="truefitFileNameGenerator">
+    </int-file:outbound-gateway>
+
+    <int-file:outbound-gateway request-channel="trueFitSite2OutChannel" reply-channel="trueFitSite2FtpOutChannel"
+        directory="${services.truefit.local.site2.processed.dir}" filename-generator="truefitFileNameGenerator">
+    </int-file:outbound-gateway>
+
+    <int-sftp:outbound-channel-adapter auto-startup="true" id="sftpTrueFitMyprojectOutbound"
+        session-factory="sftpOutTruefitSite1ClientFactory" channel="trueFitSite1FtpOutChannel" charset="UTF-8"
+        remote-file-separator="/" auto-create-directory="true" remote-directory="${services.truefit.myproject.out.sftp.dir}"
+        remote-filename-generator="truefitFileNameGenerator" />
+
+    <int-sftp:outbound-channel-adapter auto-startup="true" id="sftpTrueFitSite2Outbound"
+        session-factory="sftpOutTruefitSite2ClientFactory" channel="trueFitSite2FtpOutChannel" charset="UTF-8"
+        remote-file-separator="/" auto-create-directory="true" remote-directory="${services.truefit.site2.out.sftp.dir}"
+        remote-filename-generator="truefitFileNameGenerator" />
+
+    <bean id="truefitFileNameGenerator" class="com.myproject.services.export.truefit.TrueFitFileNameGenerator" />
+
+</beans>
