@@ -13,7 +13,7 @@ import java.util.List;
 
 public class TrueFitPopulator implements Populator<List<Object>, TruefitData> {
 
-    @Value("${service.services.truefit.hierarchy.regexp.from.product.url}")
+    @Value("${service.services.truefit.hierarchy.regexp.from.product.url:^.*?(categories/)|^.*?(en/)|^.*?(fr/)|/product/.*?$|[^/]*$}")
     private String hierarchyRegexp;
 
     @Value("${service.services.truefit.output.date.formate}")
